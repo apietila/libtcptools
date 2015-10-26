@@ -44,6 +44,21 @@ extern "C" {
 void rtt_n_sequence_set_buffer_size (int size);
 
 /*
+ * Return the last RTT sample.
+ */
+double rtt_n_sequence_last_sample_value (void *data);
+
+/*
+ * Return the last RTT sample ts.
+ */
+double rtt_n_sequence_last_sample_ts (void *data);
+
+/*
+ * Return the last RTT sample dir.
+ */
+int rtt_n_sequence_last_sample_dir (void *data);
+
+/*
  * Return the total RTT.
  */
 double rtt_n_sequence_total (void *data);

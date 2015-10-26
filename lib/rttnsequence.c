@@ -96,6 +96,12 @@ struct rtt_n_t {
 		int count;
 
 	} dir[2];			/* 0 = outside, 1 = inside */
+
+  // the last sample
+  double last_ts;
+  double last_rtt;
+  int last_dir;
+
 };
 
 
@@ -109,6 +115,10 @@ void *rtt_n_sequence_create () {
 	/* Guess that a buffer_increment of 10 will do. */
 	rtt_n_queue_vars.buffer_increment = 10;
 	rtt_n_queue_vars.item_size = sizeof (struct rtt_n_item_t);
+
+	rtt_n->last_ts = -1.0;
+	rtt_n->last_rtt = -1.0;
+	rtt_n->last_dir = -1;
 
 	/* Initialise the variables for both directions. */
 	for (i = 0; i < 2; i++) {
@@ -222,10 +232,15 @@ void rtt_n_sequence_update (void *data, struct libtrace_packet_t *packet) {
 		if (rtt > 20)
 			return;
 
+		// update last sample info
+		rtt_n->last_dir = direction;
+		rtt_n->last_rtt = rtt;
+		rtt_n->last_ts = time;
+
 		rtt_n->dir[direction].total += rtt;
 		rtt_n->dir[direction].count++;
 
-		/* Update rtt */
+		/* Update rtt estimate */
 		if (rtt_n->dir[direction].rtt < 0) {
 			rtt_n->dir[direction].rtt = rtt;
 			rtt_n->dir[direction].rtt_var = rtt / 2;
@@ -269,6 +284,30 @@ double rtt_n_sequence_total (void *data) {
 		return rtt_n->dir[0].rtt + rtt_n->dir[1].rtt;
 	else
 		return -1.0;
+}
+
+/*
+ * Return the last RTT sample.
+ */
+double rtt_n_sequence_last_sample_value (void *data) {
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  return rtt_n->last_rtt;
+}
+
+/*
+ * Return the last RTT sample ts.
+ */
+double rtt_n_sequence_last_sample_ts (void *data) {
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  return rtt_n->last_ts;
+}
+
+/*
+ * Return the last RTT sample dir.
+ */
+int rtt_n_sequence_last_sample_dir (void *data) {
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  return rtt_n->last_dir;
 }
 
 /*
