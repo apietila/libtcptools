@@ -1,0 +1,86 @@
+Libtcptools - A library that performs several simple forms of TCP analysis, 
+including RTT estimation, reordering classification and bandwidth estimation.
+
+Libtcptools is Copyright (c) 2009 The University of Waikato, Hamilton, New
+Zealand. All rights reserved.
+
+See the file COPYING for full licensing details for this software.
+
+Report any bugs, questions or comments to contact@wand.net.nz
+
+Required Libraries
+==================
+libtrace 3.0.6 or better
+	* available from http://research.wand.net.nz/software/libtrace.php
+
+Installation
+============
+After having installed the required libraries, running the following series of
+commands should install libtcptools:
+
+        ./configure
+        make
+        make install
+
+By default, libtcptools installs to /usr/local/ - this can be changed by
+appending the --prefix=<new location> option to ./configure.
+
+API Notes
+=========
+
+ * Each of the individual TCP tools is implemented as a module that must be
+   registered with a session manager. The session manager performs the task
+   of assigning packets to TCP sessions and expiring idle sessions. 
+
+ * General process for registering modules:
+   	+ Create a session manager if one does not already exist using
+	  session_manager_create()
+	+ Create an instance of each module you wish to use using the
+	  constructor function for that module, e.g. rtt_timestamp_module() 
+	  will create a new rtt_timestamp module. Remember the id values that
+	  are returned, as these are used to index into the session data
+	  array later on when calling accessor functions for that module.
+	+ Register the modules against the session manager using
+	  session_manager_register_module()
+
+ * For each packet read from the trace, call session_manager_update(). You can
+   now call any of the accessor functions for the registered modules using the
+   session returned by session_manager_update(). You will need to pass in
+   the entry in the "data" array for that session with the index equal to the
+   module id returned when you created the module.
+
+ * When finished, call session_manager_destroy to tidy up.
+
+Modules
+=======
+The following is a list of implemented modules and their accessor functions:
+
+  * rtt_n_sequence - RTT estimator based on difference between data and acks
+    		     with the same sequence number
+   	+ rtt_n_sequence_total()
+	+ rtt_n_sequence_inside()
+	+ rtt_n_sequence_outside()
+	+ rtt_n_sequence_average()
+
+  * rtt_timestamp - RTT estimator based on TCP timestamp options
+	+ rtt_timestamp_total()
+	+ rtt_timestamp_inside()
+	+ rtt_timestamp_outside()
+	+ rtt_timestamp_average()
+		
+  * rtt_handshake - RTT estimator based on time to perform 3-way handshake
+  	+ rtt_handshake_total()
+  	+ rtt_handshake_inside()
+  	+ rtt_handshake_outside()
+	
+  * bwest - Bandwidth estimator
+  	+ bwest_incoming()
+	+ bwest_outgoing()
+	+ bwest_total()		
+
+  * reordering - Reordering event classifier
+  	+ reordering_get_type()
+	+ reordering_get_message()
+	+ reordering_get_time_lag()
+
+

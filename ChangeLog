@@ -1,0 +1,6 @@
+Version 1.1.0
+-------------
+
+ * Increased size of timer queue to support traces with higher flow rates.
+ * Fixed missing header files in sessionmanager.h.
+ * Fixed bug where the queue size can wrap around.
