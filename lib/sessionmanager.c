@@ -54,40 +54,40 @@
  * This struct holds the state of a session manager.
  */
 struct session_manager_t {
-	/*
-	 * The hashtable containing the sessions
-	 */
-	hashtable_t *hashtable;
+  /*
+   * The hashtable containing the sessions
+   */
+  hashtable_t *hashtable;
 
-	/*
-	 * The modules registered with the manager to collect statistics
-	 */
-	struct session_module_t **modules;
-	uint8_t module_count;
+  /*
+   * The modules registered with the manager to collect statistics
+   */
+  struct session_module_t **modules;
+  uint8_t module_count;
 
-	/*
-	 * This holds sessions in the TIME_WAIT state which is investigated for
-	 * deletion once every second. A circular list is used for simplicity.
-	 */
-	struct timer_queue_t {
-		tcp_session_t *sessions[SM_TIMER_QUEUE_LENGTH];
-		uint32_t times[SM_TIMER_QUEUE_LENGTH];
-		unsigned int lower_idx;
-		unsigned int length;
-	} waiting_sessions;
+  /*
+   * This holds sessions in the TIME_WAIT state which is investigated for
+   * deletion once every second. A circular list is used for simplicity.
+   */
+  struct timer_queue_t {
+    tcp_session_t *sessions[SM_TIMER_QUEUE_LENGTH];
+    uint32_t times[SM_TIMER_QUEUE_LENGTH];
+    unsigned int lower_idx;
+    unsigned int length;
+  } waiting_sessions;
 
-	/*
-	 * Stores when the last clean of the queue and hashtable occurred.
-	 */
-	uint32_t last_access;
-	uint32_t last_clean;
+  /*
+   * Stores when the last clean of the queue and hashtable occurred.
+   */
+  uint32_t last_access;
+  uint32_t last_clean;
 
-	/*
-	 * Stores the latest closed session. The closed session should be passed
-	 * back to the user after the update function is called, so the resources
-	 * should only be freed on the next call of the update function.
-	 */
-	tcp_session_t *closed_session;
+  /*
+   * Stores the latest closed session. The closed session should be passed
+   * back to the user after the update function is called, so the resources
+   * should only be freed on the next call of the update function.
+   */
+  tcp_session_t *closed_session;
 };
 
 /*
@@ -214,239 +214,260 @@ int session_manager_register_module (session_manager_t * manager, struct session
  */
 tcp_session_t *session_manager_update (session_manager_t * manager, struct libtrace_packet_t * packet) {
 
-	int i;
-	tcp_session_id_t id;
-	struct libtrace_ip *ip;
-	struct libtrace_tcp *tcp;
-	int direction;
+  int i;
+  tcp_session_id_t id;
+  struct libtrace_ip *ip;
+  struct libtrace_tcp *tcp;
+  int direction;
+  
+  tcp_session_t *session;
+  
+  /* Check if there are any waiting sessions needing to be freed. The
+   * sessions freed here are those in the TIME_WAIT state.
+   */
+  uint32_t current_time = (uint32_t) (trace_get_erf_timestamp (packet) >> 32);
+  if (current_time != manager->last_access) {
+    manager->last_access = current_time;
+    timer_queue_free (manager, current_time);
+  }
+  
+  /* Check if there is a closed session waiting to be freed
+   * We only free a closed session after it has been returned to the user
+   * therefore we need to remember to free it on the next invocation of
+   * the update function.
+   */
+  if (manager->closed_session != NULL) {
+    if (manager->closed_session->waiting == 0)
+      session_manager_free_session (manager, manager->closed_session);
+    manager->closed_session = NULL;
+  }
+  
+  /* Check if a cleanup needs to be performed, which occurs once every
+   * SM_TCP_SYN_TIMEOUT. The purpose of the cleanup is to remove SYNs
+   * that do not have any other matching packets.
+   */
+  if (current_time - manager->last_clean > SM_TCP_SYN_TIMEOUT) {
+    manager->last_clean = current_time;
+    session_manager_cleanup (manager);
+  }
+  
+  if ((ip = trace_get_ip ((libtrace_packet_t*)packet)) == NULL)
+    return NULL;
+  
+  if ((tcp = trace_get_tcp ((libtrace_packet_t*)packet)) == NULL)
+    return NULL;
 
-	tcp_session_t *session;
+  direction = trace_get_direction (packet);
 
-	/* Check if there are any waiting sessions needing to be freed. The
-	 * sessions freed here are those in the TIME_WAIT state.
-	 */
-	uint32_t current_time = (uint32_t) (trace_get_erf_timestamp (packet) >> 32);
-	if (current_time != manager->last_access) {
-		manager->last_access = current_time;
-		timer_queue_free (manager, current_time);
-	}
-	/* Check if there is a closed session waiting to be freed
-	 * We only free a closed session after it has been returned to the user
-	 * therefore we need to remember to free it on the next invocation of
-	 * the update function.
-	 */
-	if (manager->closed_session != NULL) {
-		if (manager->closed_session->waiting == 0)
-			session_manager_free_session (manager, manager->closed_session);
-		manager->closed_session = NULL;
-	}
-	/* Check if a cleanup needs to be performed, which occurs once every
-	 * SM_TCP_SYN_TIMEOUT. The purpose of the cleanup is to remove SYNs
-	 * that do not have any other matching packets.
-	 */
-	if (current_time - manager->last_clean > SM_TCP_SYN_TIMEOUT) {
-		manager->last_clean = current_time;
-		session_manager_cleanup (manager);
-	}
+  /* Initialise id. The lowest IP address is used as ip_a, and this
+   * ensures that packets in both directions will be matched to the
+   * same session.
+   */
+  if (ip->ip_src.s_addr < ip->ip_dst.s_addr) {
+    id.ip_a = ip->ip_src.s_addr;
+    id.ip_b = ip->ip_dst.s_addr;
+    id.port_a = ntohs (tcp->source);
+    id.port_b = ntohs (tcp->dest);
+  } else {
+    id.ip_a = ip->ip_dst.s_addr;
+    id.ip_b = ip->ip_src.s_addr;
+    id.port_a = htons (tcp->dest);
+    id.port_b = htons (tcp->source);
+  }
 
-	if ((ip = trace_get_ip ((libtrace_packet_t*)packet)) == NULL)
-		return NULL;
-
-	if ((tcp = trace_get_tcp ((libtrace_packet_t*)packet)) == NULL)
-		return NULL;
-
-	direction = trace_get_direction (packet);
-
-	/* Initialise id. The lowest IP address is used as ip_a, and this
-	 * ensures that packets in both directions will be matched to the
-	 * same session.
-	 */
-	if (ip->ip_src.s_addr < ip->ip_dst.s_addr) {
-		id.ip_a = ip->ip_src.s_addr;
-		id.ip_b = ip->ip_dst.s_addr;
-		id.port_a = ntohs (tcp->source);
-		id.port_b = ntohs (tcp->dest);
+  /* Find session */
+  session = hashtable_retrieve (manager->hashtable, &id);
+  
+  /* What follows is the processing of the TCP session state. */
+  if (session == NULL) {
+    if (!tcp->rst && !tcp->fin) {      
+      /* Allocate a new session */
+      session = malloc (sizeof (tcp_session_t));
+	    
+      /* Give it its id */
+      session->id.ip_a = id.ip_a;
+      session->id.ip_b = id.ip_b;
+      session->id.port_a = id.port_a;
+      session->id.port_b = id.port_b;
+    
+      /* Clear flags */
+      session->waiting = 0;
+    
+      /* Allocate modules' storage */
+      session->data = malloc (manager->module_count * sizeof (void *));
+      for (i = 0; i < manager->module_count; i++) {
+	session->data[i] = manager->modules[i]->create (session);
+      }
+    
+      /* Add the session to the hashtable */
+      hashtable_insert (manager->hashtable, session);
+    
+      /* Figure out the state */
+      if (tcp->syn && !(tcp->ack)) {
+	// we got the beg of the connection
+	if (direction == SM_OUTBOUND) {
+	  /* Outbound, so SYN was sent */
+	  session->state = SYN_SENT;
+	  session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
 	} else {
-		id.ip_a = ip->ip_dst.s_addr;
-		id.ip_b = ip->ip_src.s_addr;
-		id.port_a = htons (tcp->dest);
-		id.port_b = htons (tcp->source);
+	  session->state = SYN_RCVD;
+	  session->expected_ack = 0xffffffff;
 	}
-
-	/* Find session */
-	session = hashtable_retrieve (manager->hashtable, &id);
-
-	/* What follows is the processing of the TCP session state. */
-
-	if (session == NULL) {
-
-		if (tcp->syn && !(tcp->ack)) {
-			/* Allocate a new session */
-			session = malloc (sizeof (tcp_session_t));
-
-			/* Give it its id */
-			session->id.ip_a = id.ip_a;
-			session->id.ip_b = id.ip_b;
-			session->id.port_a = id.port_a;
-			session->id.port_b = id.port_b;
-
-			/* Clear flags */
-			session->waiting = 0;
-
-			/* Allocate modules' storage */
-			session->data = malloc (manager->module_count * sizeof (void *));
-			for (i = 0; i < manager->module_count; i++) {
-				session->data[i] = manager->modules[i]->create (session);
-			}
-
-			/* Add the session to the hashtable */
-			hashtable_insert (manager->hashtable, session);
-
-			/* Change state */
-			if (direction == SM_OUTBOUND) {
-				/* Outbound, so SYN was sent */
-				session->state = SYN_SENT;
-				session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
-			} else {
-				session->state = SYN_RCVD;
-				session->expected_ack = 0xffffffff;
-			}
-		}
+      }	else if (tcp->syn && tcp->ack) {
+	// probably just missed in the initial syn
+	if (direction == SM_OUTBOUND) {
+	  /* If a SYN/ACK is sent, the
+	   * expected acknowledgement
+	   * must be recorded to compare
+	   * it against the incoming ACK
+	   * packet.
+	   */
+	  session->state = SYN_RCVD;
+	  session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
 	} else {
-
-		if (tcp->rst) {
-			/* TODO: should probably check that RST is valid before
-			 * applying it to the current session.
-			 */
-			session->state = RESET;
-			manager->closed_session = session;
-		}
-		/* Modify state if necessary */
-		switch (session->state) {
-		case SYN_RCVD:{
-				if (direction == SM_OUTBOUND) {
-					if (tcp->syn && tcp->ack) {
-						/* If a SYN/ACK is sent, the
-						 * expected acknowledgement
-						 * must be recorded to compare
-						 * it against the incoming ACK
-						 * packet.
-						 */
-						session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
-					}
-				} else {
-					if (tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
-						session->state = ESTABLISHED;
-					}
-				}
-				break;
-			}
-		case SYN_SENT:{
-				if (direction == SM_INBOUND) {
-					if (tcp->syn) {
-						if (tcp->ack) {
-							if (ntohl (tcp->ack_seq) >= session->expected_ack) {
-								session->state = ESTABLISHED;
-							}
-							/* Else invalid ACK,
-							 * probably will see a
-							 * RST later
-							 */
-						} else {
-							session->state = SYN_RCVD;
-						}
-					}
-				}
-				break;
-			}
-		case ESTABLISHED:{
-				if (direction == SM_OUTBOUND && tcp->fin) {
-					session->state = FIN_WAIT_1;
-					session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
-				} else if (direction == SM_INBOUND && tcp->fin) {
-					session->state = CLOSE_WAIT;
-				}
-				break;
-			}
-		case FIN_WAIT_1:{
-				if (direction == SM_INBOUND) {
-					if (tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
-						if (tcp->fin) {
-							session->state = TIME_WAIT;
-							session->waiting = 1;
-							timer_queue_add (manager, session, current_time);
-						} else {
-							session->state = FIN_WAIT_2;
-						}
-					} else {
-						if (tcp->fin) {
-							session->state = CLOSING;
-						}
-					}
-				}
-				break;
-			}
-		case FIN_WAIT_2:{
-				if (direction == SM_INBOUND && tcp->fin) {
-					session->state = TIME_WAIT;
-					session->waiting = 1;
-					timer_queue_add (manager, session, current_time);
-				}
-				break;
-			}
-		case CLOSING:{
-				if (direction == SM_INBOUND && tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
-					session->state = TIME_WAIT;
-					session->waiting = 1;
-					timer_queue_add (manager, session, current_time);
-				}
-				break;
-			}
-		case TIME_WAIT:{
-				if (tcp->syn) {
-					/* Need to free the session and start a
-					 * new one 
-					 */
-					timer_queue_free_early (manager, session);
-					return session_manager_update (manager, packet);
-				}
-				break;
-			}
-		case CLOSE_WAIT:{
-				if (direction == SM_OUTBOUND && tcp->fin) {
-					session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
-					session->state = LAST_ACK;
-				}
-				break;
-			}
-		case LAST_ACK:{
-				if (direction == SM_INBOUND && tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
-					session->state = CLOSED;
-					manager->closed_session = session;
-				}
-				break;
-			}
-		case CLOSED:{
-				break;
-			}
-		case RESET:{
-				break;
-			}
-		default:{
-				printf ("Error\n");
-			}
-		}
+	  // can't check the expected_ack, just assume established
+	  session->state = ESTABLISHED;
 	}
+      } else {
+	// in the middle
+	session->state = ESTABLISHED;
+      }
+    } // was rst or fin
+  } else {	  
+    if (tcp->rst) {
+      /* TODO: should probably check that RST is valid before
+       * applying it to the current session.
+       */
+      session->state = RESET;
+      manager->closed_session = session;
+    }
 
-	/* If the session is valid, update the associated modules */
-	if (session != NULL) {
-		session->last_access = current_time & 0xff;
-		for (i = 0; i < manager->module_count; i++) {
-			manager->modules[i]->update (session->data[i], packet);
-		}
+    /* Modify state if necessary */
+    switch (session->state) {
+    case SYN_RCVD:{
+      if (direction == SM_OUTBOUND) {
+	if (tcp->syn && tcp->ack) {
+	  /* If a SYN/ACK is sent, the
+	   * expected acknowledgement
+	   * must be recorded to compare
+	   * it against the incoming ACK
+	   * packet.
+	   */
+	  session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
 	}
-
-	return session;
+      } else {
+	if (tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
+	  session->state = ESTABLISHED;
+	}
+      }
+      break;
+    }
+    case SYN_SENT:{
+      if (direction == SM_INBOUND) {
+	if (tcp->syn) {
+	  if (tcp->ack) {
+	    if (ntohl (tcp->ack_seq) >= session->expected_ack) {
+	      session->state = ESTABLISHED;
+	    }
+	    /* Else invalid ACK,
+	     * probably will see a
+	     * RST later
+	     */
+	  } else {
+	    session->state = SYN_RCVD;
+	  }
+	}
+      }
+      break;
+    }
+    case ESTABLISHED:{
+      if (direction == SM_OUTBOUND && tcp->fin) {
+	session->state = FIN_WAIT_1;
+	session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
+      } else if (direction == SM_INBOUND && tcp->fin) {
+	session->state = CLOSE_WAIT;
+      }
+      break;
+    }
+    case FIN_WAIT_1:{
+      if (direction == SM_INBOUND) {
+	if (tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
+	  if (tcp->fin) {
+	    session->state = TIME_WAIT;
+	    session->waiting = 1;
+	    timer_queue_add (manager, session, current_time);
+	  } else {
+	    session->state = FIN_WAIT_2;
+	  }
+	} else {
+	  if (tcp->fin) {
+	    session->state = CLOSING;
+	  }
+	}
+      }
+      break;
+    }
+    case FIN_WAIT_2:{
+      if (direction == SM_INBOUND && tcp->fin) {
+	session->state = TIME_WAIT;
+	session->waiting = 1;
+	timer_queue_add (manager, session, current_time);
+      }
+      break;
+    }
+    case CLOSING:{
+      if (direction == SM_INBOUND && tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
+	session->state = TIME_WAIT;
+	session->waiting = 1;
+	timer_queue_add (manager, session, current_time);
+      }
+      break;
+    }
+    case TIME_WAIT:{
+      if (tcp->syn) {
+	/* Need to free the session and start a
+	 * new one 
+	 */
+	timer_queue_free_early (manager, session);
+	return session_manager_update (manager, packet);
+      }
+      break;
+    }
+    case CLOSE_WAIT:{
+      if (direction == SM_OUTBOUND && tcp->fin) {
+	session->expected_ack = ntohl (tcp->seq) + ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
+	session->state = LAST_ACK;
+      }
+      break;
+    }
+    case LAST_ACK:{
+      if (direction == SM_INBOUND && tcp->ack && ntohl (tcp->ack_seq) >= session->expected_ack) {
+	session->state = CLOSED;
+	manager->closed_session = session;
+      }
+      break;
+    }
+    case CLOSED:{
+      break;
+    }
+    case RESET:{
+      break;
+    }
+    default:{
+      printf ("Error\n");
+    }
+    }
+  }
+  
+  /* If the session is valid, update the associated modules */
+  if (session != NULL) {
+    session->last_access = current_time & 0xff;
+    for (i = 0; i < manager->module_count; i++) {
+      manager->modules[i]->update (session->data[i], packet);
+    }
+  }
+  
+  return session;
 }
 
 /*

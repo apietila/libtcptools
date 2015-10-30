@@ -7,4 +7,8 @@ lib/.deps/
 lib/Makefile
 libtool
 stamp-h1
+lib/.libs/
+lib/*.lo
+lib/*.la
+lib/*.o
 
