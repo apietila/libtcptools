@@ -71,37 +71,34 @@ struct rtt_n_item_t {
  * stores the sequence/time queues for both directions.
  */
 struct rtt_n_t {
-	/*
-	 * We need one set of variables for each direction.
-	 */
-	struct {
+  /*
+   * We need one set of variables for each direction.
+   */
+  struct {
+    
+    /*
+     * This is an queue of sequence number and time pairs.
+     */
+    struct queue_t *queue;
+    
+    /*
+     * This is the current rtt estimate for the half connection.
+     */
+    double rtt;
+    
+    double rtt_var;
+    
+    /*
+     * These vairables together store the average rtt for the
+     * session.
+     */
+    double total;
+    int count;
+    
+  } dir[2];			/* 0 = outside, 1 = inside */
 
-		/*
-		 * This is an queue of sequence number and time pairs.
-		 */
-		struct queue_t *queue;
-
-		/*
-		 * This is the current rtt estimate for the half connection.
-		 */
-		double rtt;
-
-		double rtt_var;
-
-		/*
-		 * These vairables together store the average rtt for the
-		 * session.
-		 */
-		double total;
-		int count;
-
-	} dir[2];			/* 0 = outside, 1 = inside */
-
-  // the last sample
-  double last_ts;
+  /* Last RTT sample or -1.0 if not avail. */
   double last_rtt;
-  int last_dir;
-
 };
 
 
@@ -109,40 +106,36 @@ struct rtt_n_t {
  * Allocates and initialises a new data structure for a new tcp session.
  */
 void *rtt_n_sequence_create () {
-	struct rtt_n_t *rtt_n = malloc (sizeof (struct rtt_n_t));
-	int i;
+  struct rtt_n_t *rtt_n = malloc (sizeof (struct rtt_n_t));
+  int i;
 	
-	/* Guess that a buffer_increment of 10 will do. */
-	rtt_n_queue_vars.buffer_increment = 10;
-	rtt_n_queue_vars.item_size = sizeof (struct rtt_n_item_t);
+  /* Guess that a buffer_increment of 10 will do. */
+  rtt_n_queue_vars.buffer_increment = 10;
+  rtt_n_queue_vars.item_size = sizeof (struct rtt_n_item_t);
 
-	rtt_n->last_ts = -1.0;
-	rtt_n->last_rtt = -1.0;
-	rtt_n->last_dir = -1;
-
-	/* Initialise the variables for both directions. */
-	for (i = 0; i < 2; i++) {
-
-		rtt_n->dir[i].queue = queue_create (&rtt_n_queue_vars);
-
-		rtt_n->dir[i].rtt = -1.0;
-		rtt_n->dir[i].rtt_var = -1.0;
-
-		rtt_n->dir[i].total = 0.0;
-		rtt_n->dir[i].count = 0;
-	}
-
-	return rtt_n;
+  /* Initialise the variables for both directions. */
+  for (i = 0; i < 2; i++) {
+    
+    rtt_n->dir[i].queue = queue_create (&rtt_n_queue_vars);
+    
+    rtt_n->dir[i].rtt = -1.0;
+    rtt_n->dir[i].rtt_var = -1.0;
+    
+    rtt_n->dir[i].total = 0.0;
+    rtt_n->dir[i].count = 0;
+  }
+  
+  return rtt_n;
 }
 
 /*
  * Frees the data structure of a closed tcp session.
  */
 void rtt_n_sequence_destroy (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-	queue_destroy (rtt_n->dir[0].queue);
-	queue_destroy (rtt_n->dir[1].queue);
-	free (rtt_n);
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  queue_destroy (rtt_n->dir[0].queue);
+  queue_destroy (rtt_n->dir[1].queue);
+  free (rtt_n);
 }
 
 /*
@@ -150,105 +143,104 @@ void rtt_n_sequence_destroy (void *data) {
  */
 void rtt_n_sequence_update (void *data, struct libtrace_packet_t *packet) {
 
-	/* Algorithm:
-	 * 
-	 * If the packet is a data packet, we want to record the expected sequence
-	 * number of the ack. If the packet is a retransmit, blank the queue, and 
-	 * recovery will begin with the next data packet. On each iteration,
-	 * acknowledge as many packets as possible using the ack sequence number
-	 * and this generates an RTT estimate, which is then smoothed.
-	 */
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  /* Algorithm:
+   * 
+   * If the packet is a data packet, we want to record the expected sequence
+   * number of the ack. If the packet is a retransmit, blank the queue, and 
+   * recovery will begin with the next data packet. On each iteration,
+   * acknowledge as many packets as possible using the ack sequence number
+   * and this generates an RTT estimate, which is then smoothed.
+   */
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  
+  struct queue_t *queue;
+  struct rtt_n_item_t *item;
+  
+  struct libtrace_ip *ip = trace_get_ip ((libtrace_packet_t *)packet);
+  struct libtrace_tcp *tcp = trace_get_tcp ((libtrace_packet_t *)packet);
+  int direction = trace_get_direction (packet);
+  double time = trace_get_seconds (packet);
+  
+  struct queue_itr_t itr;
+  uint32_t ack;
+  double rtt;
+  
+  int payload;
 
-	struct queue_t *queue;
-	struct rtt_n_item_t *item;
+  // reset on each packet for this flow, will only have valid
+  // value right after a packet update that creates a new sample
+  rtt_n->last_rtt = -1.0;
 
-	struct libtrace_ip *ip = trace_get_ip ((libtrace_packet_t *)packet);
-	struct libtrace_tcp *tcp = trace_get_tcp ((libtrace_packet_t *)packet);
-	int direction = trace_get_direction (packet);
-	double time = trace_get_seconds (packet);
+  /* Check that the direction is ok */
+  if(!(direction==0 || direction==1))
+    return;
 
-	struct queue_itr_t itr;
-	uint32_t ack;
-	double rtt;
+  payload = ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
 
-	int payload;
+  /* Only if the packet has data do we record it. */
+  if (payload > 0) {
+    uint32_t expected = ntohl (tcp->seq) + payload;
 
-	/* Check that the direction is ok */
-	if(!(direction==0 || direction==1))
-		return;
+    queue = rtt_n->dir[1 - direction].queue;
 
-	payload = ntohs (ip->ip_len) - ((ip->ip_hl + tcp->doff) << 2);
+    item = queue_top (queue, &(rtt_n_queue_vars));
 
-	/* Only if the packet has data do we record it. */
-	if (payload > 0) {
-		uint32_t expected = ntohl (tcp->seq) + payload;
+    /* The current packet is a retransmit if the queue is not empty 
+     * and 'expected' is not the highest element in the queue.
+     */
+    if ((item == NULL) || (expected > item->expected_ack)) {
+      struct rtt_n_item_t new_item;
+      new_item.expected_ack = expected;
+      new_item.time = time;
+      queue_add (queue, &rtt_n_queue_vars, &new_item);
+    } else {
+      /* Clear queue so that we start measuring rtt from
+       * scratch.
+       */
+      queue_clear (queue);
+    }
+    
+  }
 
-		queue = rtt_n->dir[1 - direction].queue;
+  queue = rtt_n->dir[direction].queue;
 
-		item = queue_top (queue, &(rtt_n_queue_vars));
+  /* Use the acknowledgement, generating an rtt in the process */
+  ack = ntohl (tcp->ack_seq);
+  rtt = -1.0;
 
-		/* The current packet is a retransmit if the queue is not empty 
-		 * and 'expected' is not the highest element in the queue.
-		 */
-		if ((item == NULL) || (expected > item->expected_ack)) {
-			struct rtt_n_item_t new_item;
-			new_item.expected_ack = expected;
-			new_item.time = time;
-			queue_add (queue, &rtt_n_queue_vars, &new_item);
-		} else {
-			/* Clear queue so that we start measuring rtt from
-			 * scratch.
-			 */
-			queue_clear (queue);
-		}
+  /* Iterate through the queue, breaking when we cannot ack any more
+   * elements.
+   */
+  item = queue_itr_begin (queue, &rtt_n_queue_vars, &itr);
+  while (item != NULL) {
+    if (ack >= item->expected_ack) {
+      /* Get estimated RTT and remove acked record. */
+      rtt = time - item->time;
+      queue_itr_remove (queue, &itr);
+    } else {
+      break;
+    }
+    item = queue_itr_next (queue, &rtt_n_queue_vars, &itr);
+  }
+  
+  if (rtt > 0) {
+    /* If rtt is too big, do not use it. */
+    if (rtt > RTT_N_SEQUENCE_MAX_RTT)
+      return;
 
-	}
+    rtt_n->last_rtt = rtt;
+    rtt_n->dir[direction].total += rtt;
+    rtt_n->dir[direction].count++;
 
-	queue = rtt_n->dir[direction].queue;
-
-	/* Use the acknowledgement, generating an rtt in the process */
-	ack = ntohl (tcp->ack_seq);
-	rtt = -1.0;
-
-	/* Iterate through the queue, breaking when we cannot ack any more
-	 * elements.
-	 */
-	item = queue_itr_begin (queue, &rtt_n_queue_vars, &itr);
-	while (item != NULL) {
-		if (ack >= item->expected_ack) {
-			/* Get estimated RTT and remove acked record. */
-			rtt = time - item->time;
-			queue_itr_remove (queue, &itr);
-		} else {
-			break;
-		}
-		item = queue_itr_next (queue, &rtt_n_queue_vars, &itr);
-	}
-
-	if (rtt > 0) {
-
-		/* If rtt is too big, do not use it. */
-		if (rtt > 20)
-			return;
-
-		// update last sample info
-		rtt_n->last_dir = direction;
-		rtt_n->last_rtt = rtt;
-		rtt_n->last_ts = time;
-
-		rtt_n->dir[direction].total += rtt;
-		rtt_n->dir[direction].count++;
-
-		/* Update rtt estimate */
-		if (rtt_n->dir[direction].rtt < 0) {
-			rtt_n->dir[direction].rtt = rtt;
-			rtt_n->dir[direction].rtt_var = rtt / 2;
-		} else {				/* Smooth */
-			rtt_n->dir[direction].rtt = (SMOOTH * rtt_n->dir[direction].rtt) + ((1 - SMOOTH) * rtt);
-			rtt_n->dir[direction].rtt_var = (VARSMOOTH * rtt_n->dir[direction].rtt) + ((1 - VARSMOOTH) * abs(rtt_n->dir[direction].rtt - rtt));
-		}
-	}
+    /* Update rtt estimate */
+    if (rtt_n->dir[direction].rtt < 0) {
+      rtt_n->dir[direction].rtt = rtt;
+      rtt_n->dir[direction].rtt_var = rtt / 2;
+    } else {				/* Smooth */
+      rtt_n->dir[direction].rtt = (SMOOTH * rtt_n->dir[direction].rtt) + ((1 - SMOOTH) * rtt);
+      rtt_n->dir[direction].rtt_var = (VARSMOOTH * rtt_n->dir[direction].rtt) + ((1 - VARSMOOTH) * abs(rtt_n->dir[direction].rtt - rtt));
+    }
+  }
 }
 
 /*
@@ -257,33 +249,31 @@ void rtt_n_sequence_update (void *data, struct libtrace_packet_t *packet) {
  * limit on the buffer size and it can grow to accommodate the packets.
  */
 void rtt_n_sequence_set_buffer_size (int size) {
-	if ((size == -1) || ((size > 0) && (size < 65536))) {
-		rtt_n_queue_vars.buffer_size = size;
-	} else {
-		rtt_n_queue_vars.buffer_size = -1;
-		fprintf (stderr, "rtt_n_sequence: Buffer size out of range\n");
-	}
+  if ((size == -1) || ((size > 0) && (size < 65536))) {
+    rtt_n_queue_vars.buffer_size = size;
+  } else {
+    rtt_n_queue_vars.buffer_size = -1;
+    fprintf (stderr, "rtt_n_sequence: Buffer size out of range\n");
+  }
 }
 
 double rtt_n_sequence_variation (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-
-	if ((rtt_n->dir[0].rtt >= 0) && (rtt_n->dir[1].rtt >= 0))
-		return rtt_n->dir[0].rtt_var + rtt_n->dir[1].rtt_var;
-	else
-		return -1.0;
-
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  if ((rtt_n->dir[0].rtt >= 0) && (rtt_n->dir[1].rtt >= 0))
+    return rtt_n->dir[0].rtt_var + rtt_n->dir[1].rtt_var;
+  else
+    return -1.0;
 }
 
 /*
  * Return the total RTT.
  */
 double rtt_n_sequence_total (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-	if ((rtt_n->dir[0].rtt >= 0) && (rtt_n->dir[1].rtt >= 0))
-		return rtt_n->dir[0].rtt + rtt_n->dir[1].rtt;
-	else
-		return -1.0;
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  if ((rtt_n->dir[0].rtt >= 0) && (rtt_n->dir[1].rtt >= 0))
+    return rtt_n->dir[0].rtt + rtt_n->dir[1].rtt;
+  else
+    return -1.0;
 }
 
 /*
@@ -295,74 +285,58 @@ double rtt_n_sequence_last_sample_value (void *data) {
 }
 
 /*
- * Return the last RTT sample ts.
- */
-double rtt_n_sequence_last_sample_ts (void *data) {
-  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-  return rtt_n->last_ts;
-}
-
-/*
- * Return the last RTT sample dir.
- */
-int rtt_n_sequence_last_sample_dir (void *data) {
-  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-  return rtt_n->last_dir;
-}
-
-/*
  * Return the RTT for the inside half of the connection.
  */
 double rtt_n_sequence_inside (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-	if (rtt_n->dir[0].rtt >= 0)
-		return rtt_n->dir[0].rtt;
-	else
-		return -1.0;
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  if (rtt_n->dir[0].rtt >= 0)
+    return rtt_n->dir[0].rtt;
+  else
+    return -1.0;
 }
 
 /*
  * Return the RTT for the outside half of the connection.
  */
 double rtt_n_sequence_outside (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-	if (rtt_n->dir[1].rtt >= 0)
-		return rtt_n->dir[1].rtt;
-	else
-		return -1.0;
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  if (rtt_n->dir[1].rtt >= 0)
+    return rtt_n->dir[1].rtt;
+  else
+    return -1.0;
 }
 
 /*
  * Return the average RTT over the duration of the session
  */
 double rtt_n_sequence_average (void *data) {
-	struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
-	if ((rtt_n->dir[0].total > 0) && (rtt_n->dir[1].total > 0))
-		return (rtt_n->dir[0].total / rtt_n->dir[0].count + rtt_n->dir[1].total / rtt_n->dir[1].count);
-	else
-		return -1.0;
+  struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
+  if ((rtt_n->dir[0].total > 0) && (rtt_n->dir[1].total > 0))
+    return (rtt_n->dir[0].total / rtt_n->dir[0].count + rtt_n->dir[1].total / rtt_n->dir[1].count);
+  else
+    return -1.0;
 }
 
 /*
  * This returns the session module for use by the session manager.
  */
 struct session_module_t *rtt_n_sequence_module () {
-	struct session_module_t *module = malloc (sizeof (struct session_module_t));
-	module->create = &rtt_n_sequence_create;
-	module->destroy = &rtt_n_sequence_destroy;
-	module->update = &rtt_n_sequence_update;
-	return module;
+  struct session_module_t *module = malloc (sizeof (struct session_module_t));
+  module->create = &rtt_n_sequence_create;
+  module->destroy = &rtt_n_sequence_destroy;
+  module->update = &rtt_n_sequence_update;
+  return module;
 }
 
 /*
  * This returns the rtt module for use by the reordering module.
  */
 struct rtt_module_t *rtt_n_sequence_rtt_module () {
-	struct rtt_module_t *module = malloc (sizeof (struct rtt_module_t));
-	module->session_module.create = &rtt_n_sequence_create;
-	module->session_module.destroy = &rtt_n_sequence_destroy;
-	module->session_module.update = &rtt_n_sequence_update;
-	module->inside_rtt = &(rtt_n_sequence_inside);
-	module->outside_rtt = &(rtt_n_sequence_outside);
-	return module;
+  struct rtt_module_t *module = malloc (sizeof (struct rtt_module_t));
+  module->session_module.create = &rtt_n_sequence_create;
+  module->session_module.destroy = &rtt_n_sequence_destroy;
+  module->session_module.update = &rtt_n_sequence_update;
+  module->inside_rtt = &(rtt_n_sequence_inside);
+  module->outside_rtt = &(rtt_n_sequence_outside);
+  return module;
 }

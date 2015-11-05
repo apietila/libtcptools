@@ -32,6 +32,9 @@
 #ifndef RTTNSEQUENCE_H_
 #define RTTNSEQUENCE_H_
 
+/* Upper bound for RTT sample value, anything bigger is discarded. */
+#define RTT_N_SEQUENCE_MAX_RTT 20
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,19 +47,11 @@ extern "C" {
 void rtt_n_sequence_set_buffer_size (int size);
 
 /*
- * Return the last RTT sample.
+ * Returns a valid RTT (>0) if the last update created a new sample,
+ * else < 0. You can use this right after update(pkt) to check for the
+ * latest sample (if one was created).
  */
-double rtt_n_sequence_last_sample_value (void *data);
-
-/*
- * Return the last RTT sample ts.
- */
-double rtt_n_sequence_last_sample_ts (void *data);
-
-/*
- * Return the last RTT sample dir.
- */
-int rtt_n_sequence_last_sample_dir (void *data);
+double rtt_n_sequence_last_sample(void *data);
 
 /*
  * Return the total RTT.
