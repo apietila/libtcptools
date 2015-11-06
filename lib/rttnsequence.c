@@ -49,8 +49,12 @@
 #include "queue.h"
 #include "rttnsequence.h"
 
+/* Moving RTT params. */
 #define SMOOTH 0.875
 #define VARSMOOTH 0.75
+
+/* Upper bound for RTT sample value, anything bigger is discarded. */
+#define RTT_N_SEQUENCE_MAX_RTT 20
 
 /* This allows our queue of ack/time pairs to grow indefinitely.
  * There is a function which allows the buffer to be set to prevent this.

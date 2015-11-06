@@ -32,9 +32,6 @@
 #ifndef RTTNSEQUENCE_H_
 #define RTTNSEQUENCE_H_
 
-/* Upper bound for RTT sample value, anything bigger is discarded. */
-#define RTT_N_SEQUENCE_MAX_RTT 20
-
 #ifdef __cplusplus
 extern "C" {
 #endif
