@@ -283,7 +283,7 @@ double rtt_n_sequence_total (void *data) {
 /*
  * Return the last RTT sample.
  */
-double rtt_n_sequence_last_sample_value (void *data) {
+double rtt_n_sequence_last_sample(void *data) {
   struct rtt_n_t *rtt_n = (struct rtt_n_t *) data;
   return rtt_n->last_rtt;
 }
